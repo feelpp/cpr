@@ -8,6 +8,10 @@
 
 #include <curl/curl.h>
 
+#if !defined( CURLAUTH_BEARER )
+#define CURLAUTH_BEARER       (((unsigned long)1)<<6)
+#endif
+
 #include "cpr/curlholder.h"
 #include "cpr/util.h"
 
