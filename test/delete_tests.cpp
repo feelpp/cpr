@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include <cpr/cpr.h>
+#include "cpr/cpr.h"
 
 #include "httpServer.hpp"
 
@@ -34,8 +34,7 @@ TEST(DeleteTests, DeleteUnallowedTest) {
 
 TEST(DeleteTests, DeleteJsonBodyTest) {
     Url url{server->GetBaseUrl() + "/delete.html"};
-    Response response = cpr::Delete(url, cpr::Body{"'foo': 'bar'"},
-                                    cpr::Header{{"Content-Type", "application/json"}});
+    Response response = cpr::Delete(url, cpr::Body{"'foo': 'bar'"}, cpr::Header{{"Content-Type", "application/json"}});
     std::string expected_text{"'foo': 'bar'"};
     EXPECT_EQ(expected_text, response.text);
     EXPECT_EQ(url, response.url);

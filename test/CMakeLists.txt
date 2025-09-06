@@ -6,18 +6,20 @@ if (ENABLE_SSL_TESTS)
     add_library(test_server STATIC
                 abstractServer.cpp
                 httpServer.cpp
-                httpsServer.cpp)
+                httpsServer.cpp
+                testUtils.cpp)
 else ()
     add_library(test_server STATIC
                 abstractServer.cpp
-                httpServer.cpp)
+                httpServer.cpp
+                testUtils.cpp)
 endif()
 if(WIN32)
     target_link_libraries(test_server PRIVATE Threads::Threads cpr::cpr GTest::GTest
-                                                PUBLIC mongoose ws2_32 wsock32)
+                                      PUBLIC mongoose ws2_32 wsock32)
 else()
     target_link_libraries(test_server PRIVATE Threads::Threads cpr::cpr GTest::GTest
-                                                PUBLIC mongoose)
+                                      PUBLIC mongoose)
 endif()
 
 macro(add_cpr_test _TEST_NAME)
@@ -26,7 +28,7 @@ macro(add_cpr_test _TEST_NAME)
         test_server
         GTest::GTest
         cpr::cpr
-        CURL::libcurl)
+        ${CURL_LIB})
     add_test(NAME cpr_${_TEST_NAME}_tests COMMAND ${_TEST_NAME}_tests)
     # Group under the "tests" project folder in IDEs such as Visual Studio.
     set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
@@ -39,8 +41,12 @@ endmacro()
 add_cpr_test(get)
 add_cpr_test(post)
 add_cpr_test(session)
+add_cpr_test(prepare)
 add_cpr_test(async)
-add_cpr_test(proxy)
+if(CPR_BUILD_TESTS_PROXY)
+    add_cpr_test(proxy)
+    add_cpr_test(proxy_auth)
+endif()
 add_cpr_test(head)
 add_cpr_test(delete)
 add_cpr_test(put)
@@ -52,14 +58,38 @@ add_cpr_test(error)
 add_cpr_test(alternating)
 add_cpr_test(util)
 add_cpr_test(structures)
+add_cpr_test(encoded_auth)
+add_cpr_test(version)
+add_cpr_test(download)
+add_cpr_test(interceptor)
+add_cpr_test(interceptor_multi)
+add_cpr_test(multiperform)
+add_cpr_test(resolve)
+add_cpr_test(multiasync)
+add_cpr_test(file_upload)
+add_cpr_test(singleton)
+add_cpr_test(threadpool)
+add_cpr_test(testUtils)
+add_cpr_test(connection_pool)
 
 if (ENABLE_SSL_TESTS)
     add_cpr_test(ssl)
-    # Install all ssl keys and certs:
 
-    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:ssl_tests>/data)
-    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/data/server.key $<TARGET_FILE_DIR:ssl_tests>)
-    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/data/server.cer $<TARGET_FILE_DIR:ssl_tests>)
-    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/data/client.key $<TARGET_FILE_DIR:ssl_tests>)
-    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/data/client.cer $<TARGET_FILE_DIR:ssl_tests>)
+    # Install all ssl keys and certs. Explicit copy for each file to prevent issues when copying on Windows.
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:ssl_tests>/data/certificates $<TARGET_FILE_DIR:ssl_tests>/data/keys)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/certificates/client.crt $<TARGET_FILE_DIR:ssl_tests>/data/certificates/client.crt)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/certificates/root-ca.crt $<TARGET_FILE_DIR:ssl_tests>/data/certificates/root-ca.crt)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/certificates/sub-ca.crt $<TARGET_FILE_DIR:ssl_tests>/data/certificates/sub-ca.crt)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/certificates/ca-bundle.crt $<TARGET_FILE_DIR:ssl_tests>/data/certificates/ca-bundle.crt)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/certificates/server.crt $<TARGET_FILE_DIR:ssl_tests>/data/certificates/server.crt)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/keys/client.key $<TARGET_FILE_DIR:ssl_tests>/data/keys/client.key)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/keys/root-ca.key $<TARGET_FILE_DIR:ssl_tests>/data/keys/root-ca.key)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/keys/server.key $<TARGET_FILE_DIR:ssl_tests>/data/keys/server.key)
+    add_custom_command(TARGET ssl_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/keys/server.pub $<TARGET_FILE_DIR:ssl_tests>/data/keys/server.pub)
 endif()
+
+add_custom_command(TARGET file_upload_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/test_file_hello_äüöp_2585_你好.txt $<TARGET_FILE_DIR:file_upload_tests>/data/test_file_hello_äüöp_2585_你好.txt)
+add_custom_command(TARGET file_upload_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/test_file_hello_äüöp_2585.txt $<TARGET_FILE_DIR:file_upload_tests>/data/test_file_hello_äüöp_2585.txt)
+add_custom_command(TARGET file_upload_tests POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/test_file.txt $<TARGET_FILE_DIR:file_upload_tests>/data/test_file.txt)
+
+file(INSTALL data DESTINATION data)

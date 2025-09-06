@@ -23,10 +23,10 @@ void AbstractServer::Stop() {
     server_stop_cv.wait(server_lock);
 }
 
-static void EventHandler(mg_connection* conn, int event, void* event_data) {
+static void EventHandler(mg_connection* conn, int event, void* event_data, void* context) {
     switch (event) {
-        case MG_EV_RECV:
-        case MG_EV_SEND:
+        case MG_EV_READ:
+        case MG_EV_WRITE:
             /** Do nothing. Just for housekeeping. **/
             break;
         case MG_EV_POLL:
@@ -36,12 +36,10 @@ static void EventHandler(mg_connection* conn, int event, void* event_data) {
             /** Do nothing. Just for housekeeping. **/
             break;
         case MG_EV_ACCEPT:
-            /** Do nothing. Just for housekeeping. **/
+            /* Initialize HTTPS connection if Server is an HTTPS Server */
+            static_cast<AbstractServer*>(context)->acceptConnection(conn);
             break;
         case MG_EV_CONNECT:
-            /** Do nothing. Just for housekeeping. **/
-            break;
-        case MG_EV_TIMER:
             /** Do nothing. Just for housekeeping. **/
             break;
 
@@ -49,9 +47,12 @@ static void EventHandler(mg_connection* conn, int event, void* event_data) {
             /** Do nothing. Just for housekeeping. **/
         } break;
 
-        case MG_EV_HTTP_REQUEST: {
-            AbstractServer* server = static_cast<AbstractServer*>(conn->mgr->user_data);
-            server->OnRequest(conn, static_cast<http_message*>(event_data));
+        case MG_EV_HTTP_MSG: {
+            AbstractServer* server = static_cast<AbstractServer*>(context);
+            // Use the connection address as unique identifier instead
+            int port = AbstractServer::GetRemotePort(conn);
+            server->AddConnection(port);
+            server->OnRequest(conn, static_cast<mg_http_message*>(event_data));
         } break;
 
         default:
@@ -62,7 +63,7 @@ static void EventHandler(mg_connection* conn, int event, void* event_data) {
 void AbstractServer::Run() {
     // Setup a new mongoose http server.
     memset(&mgr, 0, sizeof(mg_mgr));
-    mg_connection* c = initServer(&mgr, EventHandler);
+    initServer(&mgr, EventHandler);
 
     // Notify the main thread that the server is up and runing:
     server_start_cv.notify_all();
@@ -70,14 +71,27 @@ void AbstractServer::Run() {
     // Main server loop:
     while (should_run) {
         // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
-        mg_mgr_poll(&mgr, 1000);
+        mg_mgr_poll(&mgr, 100);
     }
 
     // Shutdown and cleanup:
+    timer_args.clear();
     mg_mgr_free(&mgr);
 
     // Notify the main thread that we have shut down everything:
     server_stop_cv.notify_all();
+}
+
+void AbstractServer::AddConnection(int remote_port) {
+    unique_connections.insert(remote_port);
+}
+
+size_t AbstractServer::GetConnectionCount() {
+    return unique_connections.size();
+}
+
+void AbstractServer::ResetConnectionCount() {
+    unique_connections.clear();
 }
 
 static const std::string base64_chars =
@@ -91,49 +105,54 @@ static const std::string base64_chars =
 std::string AbstractServer::Base64Decode(const std::string& in) {
     std::string out;
 
-    // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
     std::vector<int> T(256, -1);
-    // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
     for (size_t i = 0; i < 64; i++)
-        T[base64_chars[i]] = i;
+        T[base64_chars[i]] = static_cast<int>(i);
 
     int val = 0;
-    // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
     int valb = -8;
     for (unsigned char c : in) {
         if (T[c] == -1) {
             break;
         }
-        // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
         val = (val << 6) + T[c];
-        // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
         valb += 6;
         if (valb >= 0) {
-            // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
             out.push_back(char((val >> valb) & 0xFF));
-            // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
             valb -= 8;
         }
     }
     return out;
 }
 
-static int LowerCase(const char* s) {
-    return tolower(*s);
+// Sends error similar like in mongoose 6 method mg_http_send_error
+// https://github.com/cesanta/mongoose/blob/6.18/mongoose.c#L7081-L7089
+void AbstractServer::SendError(mg_connection* conn, int code, std::string& reason) {
+    std::string headers{"Content-Type: text/plain\r\nConnection: close\r\n"};
+    mg_http_reply(conn, code, headers.c_str(), reason.c_str());
 }
 
-static int StrnCaseCmp(const char* s1, const char* s2, size_t len) {
-    int diff = 0;
-
-    if (len > 0) {
-        do {
-            // NOLINTNEXTLINE (cppcoreguidelines-pro-bounds-pointer-arithmetic)
-            diff = LowerCase(s1++) - LowerCase(s2++);
-            // NOLINTNEXTLINE (cppcoreguidelines-pro-bounds-pointer-arithmetic)
-        } while (diff == 0 && s1[-1] != '\0' && --len > 0);
+// Checks whether a pointer to a connection is still managed by a mg_mgr.
+// This check tells whether it is still possible to send a message via the given connection
+// Note that it is still possible that the pointer of an old connection object may be reused by mongoose.
+// In this case, the active connection might refer to a different connection than the one the caller refers to
+bool AbstractServer::IsConnectionActive(mg_mgr* mgr, mg_connection* conn) {
+    mg_connection* c{mgr->conns};
+    while (c) {
+        if (c == conn) {
+            return true;
+        }
+        c = c->next;
     }
+    return false;
+}
 
-    return diff;
+uint16_t AbstractServer::GetRemotePort(const mg_connection* conn) {
+    return (conn->rem.port >> 8) | (conn->rem.port << 8);
+}
+
+uint16_t AbstractServer::GetLocalPort(const mg_connection* conn) {
+    return (conn->loc.port >> 8) | (conn->loc.port << 8);
 }
 
 } // namespace cpr

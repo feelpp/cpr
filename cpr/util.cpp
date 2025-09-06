@@ -1,42 +1,80 @@
 #include "cpr/util.h"
-
+#include "cpr/callback.h"
+#include "cpr/cookies.h"
+#include "cpr/cprtypes.h"
+#include "cpr/curlholder.h"
+#include "cpr/secure_string.h"
 #include <algorithm>
-#include <cassert>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
+#include <ctime>
+#include <curl/curl.h>
 #include <fstream>
-#include <iomanip>
+#include <ios>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <vector>
 
-namespace cpr {
-namespace util {
+#if defined(_Win32)
+#include <Windows.h>
+#else
+#ifdef __clang__
+#pragma clang diagnostic push
+#if __has_warning("-Wreserved-macro-identifier") // Not all versions of clang support this flag like the one used on Ubuntu 18.04
+#pragma clang diagnostic ignored "-Wreserved-macro-identifier"
+#endif
+#pragma clang diagnostic ignored "-Wunused-macros"
+#endif
+// https://en.cppreference.com/w/c/string/byte/memset
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, cppcoreguidelines-macro-usage)
+#define __STDC_WANT_LIB_EXT1__ 1
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+#include <cstring>
+#endif
+
+namespace cpr::util {
+
+enum class CurlHTTPCookieField : uint8_t {
+    Domain = 0,
+    IncludeSubdomains,
+    Path,
+    HttpsOnly,
+    Expires,
+    Name,
+    Value,
+};
 
 Cookies parseCookies(curl_slist* raw_cookies) {
+    const int CURL_HTTP_COOKIE_SIZE = static_cast<int>(CurlHTTPCookieField::Value) + 1;
     Cookies cookies;
     for (curl_slist* nc = raw_cookies; nc; nc = nc->next) {
         std::vector<std::string> tokens = cpr::util::split(nc->data, '\t');
-        std::string value = tokens.back();
-        tokens.pop_back();
-        cookies[tokens.back()] = value;
+        while (tokens.size() < CURL_HTTP_COOKIE_SIZE) {
+            tokens.emplace_back("");
+        }
+        const std::time_t expires = sTimestampToT(tokens.at(static_cast<size_t>(CurlHTTPCookieField::Expires)));
+        cookies.emplace_back(Cookie{
+                tokens.at(static_cast<size_t>(CurlHTTPCookieField::Name)),
+                tokens.at(static_cast<size_t>(CurlHTTPCookieField::Value)),
+                tokens.at(static_cast<size_t>(CurlHTTPCookieField::Domain)),
+                isTrue(tokens.at(static_cast<size_t>(CurlHTTPCookieField::IncludeSubdomains))),
+                tokens.at(static_cast<size_t>(CurlHTTPCookieField::Path)),
+                isTrue(tokens.at(static_cast<size_t>(CurlHTTPCookieField::HttpsOnly))),
+                std::chrono::system_clock::from_time_t(expires),
+        });
     }
     return cookies;
 }
 
 Header parseHeader(const std::string& headers, std::string* status_line, std::string* reason) {
     Header header;
-    std::vector<std::string> lines;
     std::istringstream stream(headers);
-    {
-        std::string line;
-        while (std::getline(stream, line, '\n')) {
-            lines.push_back(line);
-        }
-    }
-
-    for (std::string& line : lines) {
-        // NOLINTNEXTLINE (cppcoreguidelines-avoid-magic-numbers)
+    std::string line;
+    while (std::getline(stream, line, '\n')) {
         if (line.substr(0, 5) == "HTTP/") {
             // set the status_line if it was given
             if ((status_line != nullptr) || (reason != nullptr)) {
@@ -47,7 +85,7 @@ Header parseHeader(const std::string& headers, std::string* status_line, std::st
 
                 // set the reason if it was given
                 if (reason != nullptr) {
-                    size_t pos1 = line.find_first_of("\t ");
+                    const size_t pos1 = line.find_first_of("\t ");
                     size_t pos2 = std::string::npos;
                     if (pos1 != std::string::npos) {
                         pos2 = line.find_first_of("\t ", pos1 + 1);
@@ -61,8 +99,8 @@ Header parseHeader(const std::string& headers, std::string* status_line, std::st
             header.clear();
         }
 
-        if (line.length() > 0) {
-            size_t found = line.find(':');
+        if (!line.empty()) {
+            const size_t found = line.find(':');
             if (found != std::string::npos) {
                 std::string value = line.substr(found + 1);
                 value.erase(0, value.find_first_not_of("\t "));
@@ -89,44 +127,33 @@ std::vector<std::string> split(const std::string& to_split, char delimiter) {
 
 size_t readUserFunction(char* ptr, size_t size, size_t nitems, const ReadCallback* read) {
     size *= nitems;
-    return read->callback(ptr, size) ? size : CURL_READFUNC_ABORT;
+    return (*read)(ptr, size) ? size : CURL_READFUNC_ABORT;
 }
 
 size_t headerUserFunction(char* ptr, size_t size, size_t nmemb, const HeaderCallback* header) {
     size *= nmemb;
-    return header->callback({ptr, size}) ? size : 0;
+    return (*header)({ptr, size}) ? size : 0;
 }
 
-size_t writeFunction(char* ptr, size_t size, size_t nmemb, std::string* data) {
+size_t writeFunction(char* ptr, size_t size, size_t nmemb, void* data) {
     size *= nmemb;
-    data->append(ptr, size);
+    static_cast<std::string*>(data)->append(ptr, size);
     return size;
 }
 
 size_t writeFileFunction(char* ptr, size_t size, size_t nmemb, std::ofstream* file) {
     size *= nmemb;
-    file->write(ptr, size);
+    file->write(ptr, static_cast<std::streamsize>(size));
     return size;
 }
 
 size_t writeUserFunction(char* ptr, size_t size, size_t nmemb, const WriteCallback* write) {
     size *= nmemb;
-    return write->callback({ptr, size}) ? size : 0;
+    return (*write)({ptr, size}) ? size : 0;
 }
 
-#if LIBCURL_VERSION_NUM < 0x072000
-int progressUserFunction(const ProgressCallback* progress, double dltotal, double dlnow,
-                         double ultotal, double ulnow) {
-#else
-int progressUserFunction(const ProgressCallback* progress, curl_off_t dltotal, curl_off_t dlnow,
-                         curl_off_t ultotal, curl_off_t ulnow) {
-#endif
-    return progress->callback(dltotal, dlnow, ultotal, ulnow) ? 0 : 1;
-}
-
-int debugUserFunction(CURL* /*handle*/, curl_infotype type, char* data, size_t size,
-                      const DebugCallback* debug) {
-    debug->callback(DebugCallback::InfoType(type), std::string(data, size));
+int debugUserFunction(CURL* /*handle*/, curl_infotype type, char* data, size_t size, const DebugCallback* debug) {
+    (*debug)(static_cast<DebugCallback::InfoType>(type), std::string(data, size));
     return 0;
 }
 
@@ -140,8 +167,8 @@ int debugUserFunction(CURL* /*handle*/, curl_infotype type, char* data, size_t s
  * std::string input = "Hello World!";
  * std::string result = holder.urlEncode(input);
  **/
-std::string urlEncode(const std::string& s) {
-    CurlHolder holder; // Create a temporary new holder for URL encoding
+util::SecureString urlEncode(std::string_view s) {
+    const CurlHolder holder; // Create a temporary new holder for URL encoding
     return holder.urlEncode(s);
 }
 
@@ -155,10 +182,34 @@ std::string urlEncode(const std::string& s) {
  * std::string input = "Hello%20World%21";
  * std::string result = holder.urlDecode(input);
  **/
-std::string urlDecode(const std::string& s) {
-    CurlHolder holder; // Create a temporary new holder for URL decoding
+util::SecureString urlDecode(std::string_view s) {
+    const CurlHolder holder; // Create a temporary new holder for URL decoding
     return holder.urlDecode(s);
 }
 
-} // namespace util
-} // namespace cpr
+bool isTrue(const std::string& s) {
+    constexpr std::string_view tmp = "true";
+    auto [s_it, tmp_it] = std::mismatch(s.begin(), s.end(), tmp.begin(), tmp.end(), [](auto s_c, auto t_c) { return std::tolower(s_c) == t_c; });
+    return s_it == s.end() && tmp_it == tmp.end();
+}
+
+time_t sTimestampToT(const std::string& st) {
+    // NOLINTNEXTLINE(google-runtime-int)
+    if (std::is_same_v<time_t, unsigned long>) {
+        return static_cast<time_t>(std::stoul(st));
+    }
+    // NOLINTNEXTLINE(google-runtime-int)
+    if (std::is_same_v<time_t, unsigned long long>) {
+        return static_cast<time_t>(std::stoull(st));
+    }
+    if (std::is_same_v<time_t, int>) {
+        return static_cast<time_t>(std::stoi(st));
+    }
+    // NOLINTNEXTLINE(google-runtime-int)
+    if (std::is_same_v<time_t, long>) {
+        return static_cast<time_t>(std::stol(st));
+    }
+    return static_cast<time_t>(std::stoll(st));
+}
+
+} // namespace cpr::util

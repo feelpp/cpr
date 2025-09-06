@@ -1,8 +1,9 @@
+#include <chrono>
 #include <gtest/gtest.h>
 
 #include <string>
 
-#include <cpr/cpr.h>
+#include "cpr/cpr.h"
 
 #include "httpServer.hpp"
 
@@ -46,22 +47,32 @@ TEST(HeadTests, BadHostHeadTest) {
     EXPECT_EQ(std::string{}, response.text);
     EXPECT_EQ(url, response.url);
     EXPECT_EQ(0, response.status_code);
-    EXPECT_EQ(ErrorCode::HOST_RESOLUTION_FAILURE, response.error.code);
+    // Sometimes the DNS server returns a fake address instead of an NXDOMAIN response, leading to COULDNT_CONNECT.
+    EXPECT_TRUE(response.error.code == ErrorCode::COULDNT_RESOLVE_HOST || response.error.code == ErrorCode::COULDNT_CONNECT);
 }
 
 TEST(HeadTests, CookieHeadTest) {
     Url url{server->GetBaseUrl() + "/basic_cookies.html"};
-    Cookies cookies{{"hello", "world"}, {"my", "another; fake=cookie;"}};
-    Response response = cpr::Head(url, cookies);
+    Response response = cpr::Head(url);
+    cpr::Cookies expectedCookies{
+            {"SID", "31d4d96e407aad42", "127.0.0.1", false, "/", true, HttpServer::GetCookieExpiresIn100HoursTimePoint()},
+            {"lang", "en-US", "127.0.0.1", false, "/", true, HttpServer::GetCookieExpiresIn100HoursTimePoint()},
+    };
+    cpr::Cookies res_cookies{response.cookies};
     EXPECT_EQ(std::string{}, response.text);
     EXPECT_EQ(url, response.url);
     EXPECT_EQ(std::string{"text/html"}, response.header["content-type"]);
     EXPECT_EQ(200, response.status_code);
     EXPECT_EQ(ErrorCode::OK, response.error.code);
-    cookies = response.cookies;
-    EXPECT_EQ(cookies["cookie"], response.cookies["cookie"]);
-    EXPECT_EQ(cookies["icecream"], response.cookies["icecream"]);
-    EXPECT_EQ(cookies["expires"], response.cookies["expires"]);
+    for (auto cookie = res_cookies.begin(), expectedCookie = expectedCookies.begin(); cookie != res_cookies.end() && expectedCookie != expectedCookies.end(); cookie++, expectedCookie++) {
+        EXPECT_EQ(expectedCookie->GetName(), cookie->GetName());
+        EXPECT_EQ(expectedCookie->GetValue(), cookie->GetValue());
+        EXPECT_EQ(expectedCookie->GetDomain(), cookie->GetDomain());
+        EXPECT_EQ(expectedCookie->IsIncludingSubdomains(), cookie->IsIncludingSubdomains());
+        EXPECT_EQ(expectedCookie->GetPath(), cookie->GetPath());
+        EXPECT_EQ(expectedCookie->IsHttpsOnly(), cookie->IsHttpsOnly());
+        EXPECT_EQ(expectedCookie->GetExpires(), cookie->GetExpires());
+    }
 }
 
 TEST(HeadTests, ParameterHeadTest) {
@@ -77,7 +88,7 @@ TEST(HeadTests, ParameterHeadTest) {
 
 TEST(HeadTests, AuthenticationSuccessHeadTest) {
     Url url{server->GetBaseUrl() + "/basic_auth.html"};
-    Response response = cpr::Head(url, Authentication{"user", "password"});
+    Response response = cpr::Head(url, Authentication{"user", "password", AuthMode::BASIC});
     EXPECT_EQ(std::string{}, response.text);
     EXPECT_EQ(url, response.url);
     EXPECT_EQ(std::string{"text/html"}, response.header["content-type"]);
@@ -97,7 +108,7 @@ TEST(HeadTests, AuthenticationNullFailureHeadTest) {
 
 TEST(HeadTests, AuthenticationFailureHeadTest) {
     Url url{server->GetBaseUrl() + "/basic_auth.html"};
-    Response response = cpr::Head(url, Authentication{"user", "bad_password"});
+    Response response = cpr::Head(url, Authentication{"user", "bad_password", AuthMode::BASIC});
     EXPECT_EQ(std::string{}, response.text);
     EXPECT_EQ(url, response.url);
     EXPECT_EQ("text/plain", response.header["content-type"]);
@@ -107,8 +118,12 @@ TEST(HeadTests, AuthenticationFailureHeadTest) {
 
 TEST(HeadTests, BearerSuccessHeadTest) {
     Url url{server->GetBaseUrl() + "/bearer_token.html"};
-    Response response = cpr::Head(url, Bearer{"the_token"});
-    EXPECT_EQ(std::string{}, response.text);
+#if CPR_LIBCURL_VERSION_NUM >= 0x073D00 // 7.61.0
+    Response response = cpr::Get(url, Bearer{"the_token"});
+#else
+    Response response = cpr::Get(url, Header{{"Authorization", "Bearer the_token"}});
+#endif
+    EXPECT_EQ(std::string{"Header reflect GET"}, response.text);
     EXPECT_EQ(url, response.url);
     EXPECT_EQ(std::string{"text/html"}, response.header["content-type"]);
     EXPECT_EQ(200, response.status_code);
@@ -117,7 +132,7 @@ TEST(HeadTests, BearerSuccessHeadTest) {
 
 TEST(HeadTests, DigestSuccessHeadTest) {
     Url url{server->GetBaseUrl() + "/digest_auth.html"};
-    Response response = cpr::Head(url, Digest{"user", "password"});
+    Response response = cpr::Head(url, Authentication{"user", "password", AuthMode::DIGEST});
     EXPECT_EQ(std::string{}, response.text);
     EXPECT_EQ(url, response.url);
     EXPECT_EQ(std::string{"text/html"}, response.header["content-type"]);
@@ -171,7 +186,7 @@ TEST(HeadTests, SetEmptyHeaderHeadTest) {
 
 TEST(HeadTests, RedirectHeadTest) {
     Url url{server->GetBaseUrl() + "/temporary_redirect.html"};
-    Response response = cpr::Head(url, false);
+    Response response = cpr::Head(url, Redirect(false));
     EXPECT_EQ(std::string{}, response.text);
     EXPECT_EQ(url, response.url);
     EXPECT_EQ(std::string{}, response.header["content-type"]);
@@ -181,7 +196,7 @@ TEST(HeadTests, RedirectHeadTest) {
 
 TEST(HeadTests, ZeroMaxRedirectsHeadTest) {
     Url url{server->GetBaseUrl() + "/hello.html"};
-    Response response = cpr::Head(url, 0L);
+    Response response = cpr::Head(url, Redirect(0L));
     EXPECT_EQ(std::string{}, response.text);
     EXPECT_EQ(url, response.url);
     EXPECT_EQ(std::string{"text/html"}, response.header["content-type"]);

@@ -2,12 +2,13 @@
 #define CPR_CURL_HOLDER_H
 
 #include <array>
-#include <mutex>
-#include <string>
-
 #include <curl/curl.h>
+#include <mutex>
+
+#include "cpr/secure_string.h"
 
 namespace cpr {
+
 struct CurlHolder {
   private:
     /**
@@ -17,14 +18,18 @@ struct CurlHolder {
      * https://curl.haxx.se/libcurl/c/curl_easy_init.html
      * https://curl.haxx.se/libcurl/c/threadsafe.html
      **/
-    // It does not make sense to make a std::mutex const.
-    // NOLINTNEXTLINE (cppcoreguidelines-avoid-non-const-global-variables)    
-    static std::mutex curl_easy_init_mutex_;
+
+    // Avoids initalization order problems in a static build
+    static std::mutex& curl_easy_init_mutex_() {
+        static std::mutex curl_easy_init_mutex_;
+        return curl_easy_init_mutex_;
+    }
 
   public:
     CURL* handle{nullptr};
     struct curl_slist* chunk{nullptr};
-    struct curl_httppost* formpost{nullptr};
+    struct curl_slist* resolveCurlList{nullptr};
+    curl_mime* multipart{nullptr};
     std::array<char, CURL_ERROR_SIZE> error{};
 
     CurlHolder();
@@ -38,12 +43,12 @@ struct CurlHolder {
     /**
      * Uses curl_easy_escape(...) for escaping the given string.
      **/
-    std::string urlEncode(const std::string& s) const;
+    [[nodiscard]] util::SecureString urlEncode(std::string_view s) const;
 
     /**
      * Uses curl_easy_unescape(...) for unescaping the given string.
      **/
-    std::string urlDecode(const std::string& s) const;
+    [[nodiscard]] util::SecureString urlDecode(std::string_view s) const;
 };
 } // namespace cpr
 
